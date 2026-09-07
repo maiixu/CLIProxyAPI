@@ -1,0 +1,50 @@
+{
+  "agents": {
+    "providers": {
+      "codex-zed": {
+        "extends": "codex",
+        "label": "Zed (Sol worker)",
+        "description": "Codex worker using native Responses through CLIProxy and the Zed account.",
+        "command": [
+          "/Users/maixu/.local/bin/codex-zed"
+        ],
+        "enabled": false,
+        "models": [
+          {
+            "id": "zed/gpt-5.6-sol",
+            "label": "Sol (Zed)",
+            "isDefault": true,
+            "thinkingOptions": [
+              {
+                "id": "low",
+                "label": "Low"
+              },
+              {
+                "id": "medium",
+                "label": "Medium",
+                "isDefault": true
+              },
+              {
+                "id": "high",
+                "label": "High"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "daemon": {
+    "agentProfiles": [
+      {
+        "id": "zed-sol-medium",
+        "name": "Zed \u00b7 Sol medium",
+        "provider": "codex-zed",
+        "model": "zed/gpt-5.6-sol",
+        "modeId": "full-access",
+        "thinkingOptionId": "medium",
+        "notes": "Sol worker charged to the Zed monthly credit, through CLIProxy. Uses Codex tools and native Responses. Pass a clear task, existing worktree, constraints and acceptance checks. Native Codex, Claude and Antigravity are separate account routes."
+      }
+    ]
+  }
+}

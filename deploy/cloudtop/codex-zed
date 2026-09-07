@@ -1,0 +1,41 @@
+#!/opt/homebrew/bin/python3
+"""Run Codex against the local CLIProxy Zed provider."""
+import json
+import os
+from pathlib import Path
+import sys
+import tomllib
+
+if sys.argv[1:] in (["--version"], ["-V"], ["--help"], ["-h"]):
+    os.execv("/opt/homebrew/bin/codex", ["/opt/homebrew/bin/codex", *sys.argv[1:]])
+key_path = Path("/Users/maixu/.config/cliproxyapi/client-key")
+if not key_path.is_file():
+    sys.exit("The local CLIProxy client key is missing.")
+env = os.environ.copy()
+for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL"):
+    env.pop(key, None)
+env["ZED_GATEWAY_API_KEY"] = key_path.read_text().strip()
+arguments = sys.argv[1:]
+if arguments[:1] == ["app-server"]:
+    # Codex accepts --profile for runtime commands, but app-server needs -c.
+    profile_home = Path(env.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        profile = tomllib.loads((profile_home / "zed-sol.config.toml").read_text())
+    except (OSError, ValueError) as error:
+        sys.exit("Cannot load the Zed Codex profile: " + str(error))
+
+    def config_arguments(table, prefix=""):
+        result = []
+        for key, value in table.items():
+            name = prefix + key
+            if isinstance(value, dict):
+                result.extend(config_arguments(value, name + "."))
+            else:
+                result.extend(["-c", name + "=" + json.dumps(value, ensure_ascii=False)])
+        return result
+
+    # app-server does not inherit -c arguments placed before its subcommand.
+    arguments = [arguments[0], *config_arguments(profile), *arguments[1:]]
+else:
+    arguments = ["--profile", "zed-sol", *arguments]
+os.execve("/opt/homebrew/bin/codex", ["/opt/homebrew/bin/codex", *arguments], env)

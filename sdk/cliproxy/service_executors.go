@@ -207,6 +207,7 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"vertex",
 		"aistudio",
 		"antigravity",
+		"zed",
 		"kimi",
 		"xai",
 		"openai-compatibility",
@@ -288,6 +289,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		return
 	case "antigravity":
 		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(cfg))
+	case "zed":
+		s.coreManager.RegisterExecutor(executor.NewZedExecutor(cfg))
 	case "claude":
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(cfg))
 	case "kimi":

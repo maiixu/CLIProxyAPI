@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+umask 077
+export PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+cd /Users/maixu/.local/state/cliproxyapi
+exec /Users/maixu/.local/libexec/cliproxyapi/current/cli-proxy-api   -config /Users/maixu/.config/cliproxyapi/config.yaml -local-model "$@"

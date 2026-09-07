@@ -1,0 +1,24 @@
+# Only this Codex profile routes model requests through Zed.
+model = "zed/gpt-5.6-sol"
+model_provider = "zed-gateway"
+model_catalog_json = "/Users/maixu/.codex/zed-sol.models.json"
+model_context_window = 272000
+model_reasoning_effort = "medium"
+web_search = "disabled"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[features]
+apps = false
+multi_agent = false
+enable_request_compression = false
+
+[model_providers.zed-gateway]
+name = "Zed through local CLIProxy"
+base_url = "http://127.0.0.1:8317/v1"
+wire_api = "responses"
+env_key = "ZED_GATEWAY_API_KEY"
+requires_openai_auth = false
+supports_websockets = false
+request_max_retries = 0
+stream_max_retries = 0

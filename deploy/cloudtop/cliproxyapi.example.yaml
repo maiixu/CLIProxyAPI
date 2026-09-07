@@ -1,0 +1,12 @@
+host: "127.0.0.1"
+port: 8317
+auth-dir: "/Users/maixu/.local/state/cliproxyapi/auth"
+api-keys:
+  - "GENERATE_LOCALLY"
+remote-management:
+  allow-remote: false
+  secret-key: ""
+  disable-control-panel: true
+force-model-prefix: true
+request-retry: 0
+max-retry-credentials: 1
