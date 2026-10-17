@@ -1,6 +1,6 @@
 package cliproxy
 
-import "github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+import "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 
 // zedModels exposes only the verified Responses model with Zed's token limits.
 func zedModels() []*ModelInfo {

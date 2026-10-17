@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	codexmodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/models"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 func TestZedAuthFileRegistersNativeExecutorAndPrefixedSol(t *testing.T) {
@@ -36,6 +36,9 @@ func TestZedAuthFileRegistersNativeExecutorAndPrefixedSol(t *testing.T) {
 		t.Fatal("Zed auth was classified as OpenAI compatibility")
 	}
 	service := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
+	if _, err := service.coreManager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
 	service.ensureExecutorsForAuth(auth)
 	registeredExecutor, ok := service.coreManager.Executor("zed")
 	if !ok {
@@ -49,6 +52,9 @@ func TestZedAuthFileRegistersNativeExecutorAndPrefixedSol(t *testing.T) {
 	modelRegistry.UnregisterClient(auth.ID)
 	t.Cleanup(func() { modelRegistry.UnregisterClient(auth.ID) })
 	codexModelsBefore := registry.GetCodexProModels()
+	if _, err := service.coreManager.Update(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
 	service.registerModelsForAuth(context.Background(), auth)
 	models := modelRegistry.GetModelsForClient(auth.ID)
 	if len(models) != 1 || models[0].ID != "zed/gpt-5.6-sol" {
@@ -87,13 +93,22 @@ func TestZedAuthFileRegistersNativeExecutorAndPrefixedSol(t *testing.T) {
 	}
 
 	auth.Attributes["excluded_models"] = "gpt-5.6-sol"
+	if _, err := service.coreManager.Update(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
 	service.registerModelsForAuth(context.Background(), auth)
 	if got := modelRegistry.GetModelsForClient(auth.ID); len(got) != 0 {
 		t.Fatalf("excluded Zed model remains registered: %#v", got)
 	}
 	delete(auth.Attributes, "excluded_models")
+	if _, err := service.coreManager.Update(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
 	service.registerModelsForAuth(context.Background(), auth)
 	auth.Disabled = true
+	if _, err := service.coreManager.Update(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
 	service.registerModelsForAuth(context.Background(), auth)
 	if got := modelRegistry.GetModelsForClient(auth.ID); len(got) != 0 {
 		t.Fatalf("disabled Zed auth still advertises models: %#v", got)

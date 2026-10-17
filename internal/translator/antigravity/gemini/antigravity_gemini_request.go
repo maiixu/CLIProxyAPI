@@ -10,10 +10,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/translator/gemini/common"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/translator/gemini/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -35,7 +35,7 @@ import (
 //
 // Returns:
 //   - []byte: The transformed request data in Gemini API format
-func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ bool) []byte {
+func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ bool) ([]byte, error) {
 	rawJSON := inputRawJSON
 	functionNameMap := util.SanitizedFunctionNameMap(inputRawJSON)
 	// Keep the envelope in []byte form. Round-tripping through string copies the
@@ -49,7 +49,7 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 	fixedJSON, errFixCLIToolResponse := fixCLIToolResponse(rawJSON)
 	if errFixCLIToolResponse != nil {
-		return []byte{}
+		return []byte{}, nil
 	}
 	rawJSON = fixedJSON
 
@@ -57,6 +57,8 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		rawJSON, _ = sjson.SetRawBytes(rawJSON, "request.systemInstruction", []byte(systemInstructionResult.Raw))
 		rawJSON, _ = sjson.DeleteBytes(rawJSON, "request.system_instruction")
 	}
+
+	rawJSON = normalizeGeminiGenerationConfigResponseSchema(rawJSON)
 
 	// Normalize roles in request.contents: default to valid values if missing/invalid.
 	// The contents array is only materialized when a role actually changes; copying
@@ -153,7 +155,28 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		rawJSON = signature.SanitizeGeminiRequestThoughtSignatures(rawJSON, "request.contents")
 	}
 
-	return common.AttachDefaultSafetySettings(rawJSON, "request.safetySettings")
+	return common.AttachDefaultSafetySettings(rawJSON, "request.safetySettings"), nil
+}
+
+// normalizeGeminiGenerationConfigResponseSchema converts generationConfig.responseJsonSchema
+// (and snake_case response_json_schema) to generationConfig.responseSchema for Antigravity compatibility.
+func normalizeGeminiGenerationConfigResponseSchema(rawJSON []byte) []byte {
+	for _, container := range []string{"request.generationConfig", "request.generation_config"} {
+		if !util.GetGJSONBytesNoCopy(rawJSON, container).Exists() {
+			continue
+		}
+		for _, schemaKey := range []string{"responseJsonSchema", "response_json_schema"} {
+			oldPath := container + "." + schemaKey
+			if schema := util.GetGJSONBytesNoCopy(rawJSON, oldPath); schema.Exists() {
+				targetPath := container + ".responseSchema"
+				if !util.GetGJSONBytesNoCopy(rawJSON, targetPath).Exists() {
+					rawJSON, _ = sjson.SetRawBytes(rawJSON, targetPath, []byte(schema.Raw))
+				}
+				rawJSON, _ = sjson.DeleteBytes(rawJSON, oldPath)
+			}
+		}
+	}
+	return rawJSON
 }
 
 // geminiContentRolesNeedNormalization reports whether any content role is missing

@@ -1,6 +1,6 @@
 # Native Zed Sol worker on cloudtop
 
-This branch adds a native Zed Responses provider to CLIProxyAPI v7.2.152.
+This branch adds a native Zed Responses provider to CLIProxyAPI v8.0.32.
 The target runtime is Paseo -> Codex worker -> CLIProxyAPI -> Zed.
 The ordinary Codex, Claude subscription and Antigravity routes remain separate.
 
@@ -123,3 +123,15 @@ This patch does not introduce an automatic cross-provider dispatch/cleanup polic
 A complete native Zed login command is not included. Existing private login
 credentials are retained for recovery; short-lived model JWTs refresh in this
 provider, while revoked login credentials still require re-authentication.
+
+
+## October17 candidate
+
+The v8.0.32 merge retains the native Zed executor and model prefix. Zed unit and
+race tests pass; registration fixtures now register/update auth with the manager
+before publishing models, matching upstream's new publication fence.
+
+The isolated candidate advertises `zed/gpt-5.6-sol`, but the real upstream request
+returns `Unauthorized`. Production remains on7.2.152-zed pending login recovery
+and successful real tools/usage acceptance. Do not infer runtime readiness from
+model discovery or unit tests. No credential or security policy was changed.

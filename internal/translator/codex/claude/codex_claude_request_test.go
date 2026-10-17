@@ -73,7 +73,7 @@ func TestConvertClaudeRequestToCodex_SystemMessageScenarios(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ConvertClaudeRequestToCodex("test-model", []byte(tt.inputJSON), false)
+			result, _ := ConvertClaudeRequestToCodex("test-model", []byte(tt.inputJSON), false)
 			resultJSON := gjson.ParseBytes(result)
 			inputs := resultJSON.Get("input").Array()
 
@@ -115,7 +115,7 @@ func TestConvertClaudeRequestToCodex_MessageSystemRoleWrapsAsUserReminder(t *tes
 		]
 	}`
 
-	result := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
+	result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
 	inputs := gjson.GetBytes(result, "input").Array()
 	if len(inputs) != 5 {
 		t.Fatalf("got %d input items, want 5: %s", len(inputs), gjson.GetBytes(result, "input").Raw)
@@ -162,7 +162,7 @@ func TestConvertClaudeRequestToCodex_PreservesToolAdjacencyWithInterveningSystem
 		]
 	}`
 
-	result := ConvertClaudeRequestToCodex("gpt-5.4", []byte(inputJSON), false)
+	result, _ := ConvertClaudeRequestToCodex("gpt-5.4", []byte(inputJSON), false)
 	inputs := gjson.GetBytes(result, "input").Array()
 
 	// Expected item types:
@@ -232,7 +232,7 @@ func TestConvertClaudeRequestToCodex_ParallelToolCalls(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ConvertClaudeRequestToCodex("test-model", []byte(tt.inputJSON), false)
+			result, _ := ConvertClaudeRequestToCodex("test-model", []byte(tt.inputJSON), false)
 			resultJSON := gjson.ParseBytes(result)
 
 			if got := resultJSON.Get("parallel_tool_calls").Bool(); got != tt.wantParallelToolCalls {
@@ -306,7 +306,7 @@ func TestConvertClaudeRequestToCodex_ServiceTier(t *testing.T) {
 				inputJSON, _ = sjson.SetRawBytes(inputJSON, "speed", []byte(tt.speedJSON))
 			}
 
-			result := ConvertClaudeRequestToCodex("gpt-5.4", inputJSON, false)
+			result, _ := ConvertClaudeRequestToCodex("gpt-5.4", inputJSON, false)
 			serviceTierResult := gjson.GetBytes(result, "service_tier")
 			if serviceTierResult.Exists() != tt.wantExists {
 				t.Fatalf("service_tier exists = %v, want %v. Output: %s", serviceTierResult.Exists(), tt.wantExists, string(result))
@@ -340,7 +340,7 @@ func TestConvertClaudeRequestToCodex_ShortenLongToolUseIDs(t *testing.T) {
 		]
 	}`
 
-	result := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
+	result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
 	inputs := gjson.GetBytes(result, "input").Array()
 
 	var callID string
@@ -405,7 +405,7 @@ func TestConvertClaudeRequestToCodex_ToolChoiceModeMapping(t *testing.T) {
 				"messages": [{"role": "user", "content": "hello"}]
 			}`
 
-			result := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
+			result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
 			resultJSON := gjson.ParseBytes(result)
 
 			if got := resultJSON.Get("tool_choice").String(); got != tt.wantCodexToolChoice {
@@ -426,7 +426,7 @@ func TestConvertClaudeRequestToCodex_ToolChoiceSpecificFunctionUsesConvertedName
 		"messages": [{"role": "user", "content": "hello"}]
 	}`
 
-	result := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
+	result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 
 	if got := resultJSON.Get("tool_choice.type").String(); got != "function" {
@@ -439,6 +439,44 @@ func TestConvertClaudeRequestToCodex_ToolChoiceSpecificFunctionUsesConvertedName
 	}
 	if choiceName == longName {
 		t.Fatalf("tool_choice.name should use shortened Codex tool name. Output: %s", string(result))
+	}
+}
+
+func TestConvertClaudeRequestToCodex_WebSearchSourcesInclude(t *testing.T) {
+	tests := []struct {
+		name        string
+		tools       string
+		wantSources bool
+	}{
+		{name: "no tools"},
+		{name: "empty tools", tools: `[]`},
+		{name: "ordinary function", tools: `[{"name":"lookup","input_schema":{"type":"object"}}]`},
+		{name: "same name function", tools: `[{"name":"web_search","input_schema":{"type":"object"}}]`},
+		{name: "unsupported type", tools: `[{"type":"web_search_20990101","name":"web_search"}]`},
+		{name: "20250305", tools: `[{"type":"web_search_20250305","name":"web_search"}]`, wantSources: true},
+		{name: "20260209", tools: `[{"type":"web_search_20260209","name":"web_search"}]`, wantSources: true},
+		{name: "custom name", tools: `[{"type":"web_search_20250305","name":"browser_search"}]`, wantSources: true},
+		{name: "nameless search", tools: `[{"type":"web_search_20250305"}]`, wantSources: true},
+		{name: "multiple searches and function", tools: `[{"type":"web_search_20250305","name":"search_one"},{"type":"web_search_20260209","name":"search_two"},{"name":"lookup","input_schema":{"type":"object"}}]`, wantSources: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, stream := range []bool{false, true} {
+				inputJSON := `{"model":"claude-opus-4-7","messages":[{"role":"user","content":"hello"}]`
+				if tt.tools != "" {
+					inputJSON += `,"tools":` + tt.tools
+				}
+				inputJSON += `}`
+				result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), stream)
+				wantInclude := `["reasoning.encrypted_content"]`
+				if tt.wantSources {
+					wantInclude = `["reasoning.encrypted_content","web_search_call.action.sources"]`
+				}
+				if got := gjson.GetBytes(result, "include").Raw; got != wantInclude {
+					t.Errorf("stream=%v: include = %s, want %s", stream, got, wantInclude)
+				}
+			}
+		})
 	}
 }
 
@@ -463,7 +501,7 @@ func TestConvertClaudeRequestToCodex_WebSearchToolMapping(t *testing.T) {
 		"messages": [{"role": "user", "content": "hello"}]
 	}`
 
-	result := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
+	result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 
 	if got := resultJSON.Get("tools.0.type").String(); got != "web_search" {
@@ -494,7 +532,7 @@ func TestConvertClaudeRequestToCodex_WebSearchToolChoiceUsesDeclaredTypedToolNam
 		"messages": [{"role": "user", "content": "hello"}]
 	}`
 
-	result := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
+	result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 
 	if got := resultJSON.Get("tool_choice.type").String(); got != "function" {
@@ -531,7 +569,7 @@ func TestConvertClaudeRequestToCodex_AssistantThinkingSignatureToReasoningItem(t
 		]
 	}`
 
-	result := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
+	result, _ := ConvertClaudeRequestToCodex("test-model", []byte(inputJSON), false)
 	resultJSON := gjson.ParseBytes(result)
 	inputs := resultJSON.Get("input").Array()
 	if len(inputs) != 3 {
@@ -579,7 +617,7 @@ func TestConvertClaudeRequestToCodex_PreservesBase64PDFDocumentContent(t *testin
 		}]
 	}`
 
-	result := ConvertClaudeRequestToCodex("gpt-5.6-sol", []byte(inputJSON), false)
+	result, _ := ConvertClaudeRequestToCodex("gpt-5.6-sol", []byte(inputJSON), false)
 	content := gjson.GetBytes(result, "input.0.content").Array()
 	if len(content) != 3 {
 		t.Fatalf("got %d content items, want 3. Output: %s", len(content), result)
@@ -628,7 +666,7 @@ func TestConvertClaudeRequestToCodex_PreservesContentOrderAcrossToolAndReasoning
 		"tools": [{"name":"lookup","input_schema":{"type":"object"}}]
 	}`
 
-	result := ConvertClaudeRequestToCodex("gpt-5.4", []byte(inputJSON), false)
+	result, _ := ConvertClaudeRequestToCodex("gpt-5.4", []byte(inputJSON), false)
 	inputs := gjson.GetBytes(result, "input").Array()
 	if len(inputs) != 8 {
 		t.Fatalf("got %d input items, want 8. Output: %s", len(inputs), result)
@@ -666,7 +704,7 @@ func TestConvertClaudeRequestToCodex_AssistantGrokSignatureToReasoningItem(t *te
 	payload := []byte(`{"model":"grok-4.5","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"summary","signature":""},{"type":"text","text":"answer"}]},{"role":"user","content":"next"}]}`)
 	payload, _ = sjson.SetBytes(payload, "messages.0.content.0.signature", signature)
 
-	out := ConvertClaudeRequestToCodex("grok-4.5", payload, false)
+	out, _ := ConvertClaudeRequestToCodex("grok-4.5", payload, false)
 	reasoning := gjson.GetBytes(out, "input.0")
 	if reasoning.Get("type").String() != "reasoning" {
 		t.Fatalf("input.0 type = %q, want reasoning; output=%s", reasoning.Get("type").String(), out)
@@ -683,7 +721,7 @@ func TestConvertClaudeRequestToCodex_IgnoresGrokSignatureForNonGrokTargets(t *te
 
 	for _, modelName := range []string{"gpt-5.4", "claude-sonnet-4-6"} {
 		t.Run(modelName, func(t *testing.T) {
-			out := ConvertClaudeRequestToCodex(modelName, payload, false)
+			out, _ := ConvertClaudeRequestToCodex(modelName, payload, false)
 			if got := countRequestInputItemsByType(out, "reasoning"); got != 0 {
 				t.Fatalf("got %d reasoning items for non-Grok target, want 0; output=%s", got, out)
 			}
@@ -744,7 +782,7 @@ func TestConvertClaudeRequestToCodex_IgnoresNonCodexThinkingSignatures(t *testin
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ConvertClaudeRequestToCodex("test-model", []byte(tt.inputJSON), false)
+			result, _ := ConvertClaudeRequestToCodex("test-model", []byte(tt.inputJSON), false)
 			if got := countRequestInputItemsByType(result, "reasoning"); got != 0 {
 				t.Fatalf("got %d reasoning items, want 0. Output: %s", got, string(result))
 			}
@@ -793,7 +831,7 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 			}
 		}`)
 
-		translated := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
+		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
 		root := gjson.ParseBytes(translated)
 
 		if !root.Get("text.format").Exists() {
@@ -831,7 +869,7 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 			}
 		}`)
 
-		translated := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
+		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
 		root := gjson.ParseBytes(translated)
 
 		if got := root.Get("text.format.name").String(); got != "custom_schema" {
@@ -850,7 +888,7 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 			]
 		}`)
 
-		translated := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
+		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
 		root := gjson.ParseBytes(translated)
 		if root.Get("text.format").Exists() {
 			t.Fatalf("expected no text.format in translated payload, got: %s", translated)
@@ -867,7 +905,7 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 			]
 		}`)
 
-		translated := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
+		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
 		root := gjson.ParseBytes(translated)
 		if root.Get("text.format").Exists() {
 			t.Fatalf("expected no text.format in translated payload, got: %s", translated)
@@ -901,7 +939,7 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 			}
 		}`)
 
-		translated := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
+		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
 		root := gjson.ParseBytes(translated)
 		if got := root.Get("text.format.strict").Bool(); got != false {
 			t.Errorf("expected text.format.strict to be false for non-strict-compatible schema, got %v (%s)", got, translated)
@@ -932,10 +970,333 @@ func TestConvertClaudeRequestToCodex_OutputConfigFormat(t *testing.T) {
 			}
 		}`)
 
-		translated := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
+		translated, _ := ConvertClaudeRequestToCodex("gpt-5.4", payload, false)
 		root := gjson.ParseBytes(translated)
 		if got := root.Get("text.format.strict").Bool(); !got {
 			t.Errorf("expected text.format.strict to stay true for strict-compatible schema, got %v (%s)", got, translated)
 		}
 	})
+}
+
+func TestNormalizeToolParameters_StripsNestedSchemaAndId(t *testing.T) {
+	input := `{
+		"type": "object",
+		"$schema": "http://json-schema.org/draft-07/schema#",
+		"$id": "https://example.invalid/root",
+		"properties": {
+			"q": {
+				"type": "string",
+				"$schema": "http://json-schema.org/draft-07/schema#",
+				"$id": "https://example.invalid/q"
+			},
+			"tags": {
+				"type": "array",
+				"items": {"type": "string", "$id": "https://example.invalid/tag"}
+			},
+			"mode": {
+				"anyOf": [
+					{"type": "string", "$schema": "http://json-schema.org/draft-07/schema#"},
+					{"type": "null"}
+				]
+			},
+			"refField": {
+				"$ref": "#/$defs/hint"
+			}
+		},
+		"$defs": {
+			"hint": {"type": "string", "$id": "https://example.invalid/hint"}
+		},
+		"required": ["q"]
+	}`
+
+	got := normalizeToolParameters(input)
+	parsed := gjson.Parse(got)
+
+	if parsed.Get("$schema").Exists() {
+		t.Errorf("expected root $schema to be removed, got %v", parsed.Get("$schema").Raw)
+	}
+	if parsed.Get("$id").Exists() {
+		t.Errorf("expected root $id to be removed, got %v", parsed.Get("$id").Raw)
+	}
+	if parsed.Get("properties.q.$schema").Exists() {
+		t.Errorf("expected properties.q.$schema to be removed, got %v", parsed.Get("properties.q.$schema").Raw)
+	}
+	if parsed.Get("properties.q.$id").Exists() {
+		t.Errorf("expected properties.q.$id to be removed, got %v", parsed.Get("properties.q.$id").Raw)
+	}
+	if parsed.Get("properties.tags.items.$id").Exists() {
+		t.Errorf("expected properties.tags.items.$id to be removed, got %v", parsed.Get("properties.tags.items.$id").Raw)
+	}
+	if parsed.Get("properties.mode.anyOf.0.$schema").Exists() {
+		t.Errorf("expected properties.mode.anyOf.0.$schema to be removed, got %v", parsed.Get("properties.mode.anyOf.0.$schema").Raw)
+	}
+	if parsed.Get("$defs.hint.$id").Exists() {
+		t.Errorf("expected $defs.hint.$id to be removed, got %v", parsed.Get("$defs.hint.$id").Raw)
+	}
+	if parsed.Get("properties.refField.$ref").String() != "#/$defs/hint" {
+		t.Errorf("expected $ref to be preserved, got %v", parsed.Get("properties.refField.$ref").Raw)
+	}
+	if parsed.Get("properties.q.type").String() != "string" {
+		t.Errorf("expected properties.q.type to be 'string', got %v", parsed.Get("properties.q.type").Raw)
+	}
+}
+
+func TestNormalizeToolParameters_PreservesPropertyNamesAndLiteralData(t *testing.T) {
+	input := `{
+		"type": "object",
+		"properties": {
+			"$schema": {
+				"type": "string",
+				"$schema": "http://json-schema.org/draft-07/schema#",
+				"$id": "https://example.invalid/sub-schema"
+			},
+			"$id": {
+				"type": "string"
+			},
+			"config": {
+				"type": "object",
+				"default": {
+					"$id": "default-id-123"
+				}
+			}
+		}
+	}`
+
+	got := normalizeToolParameters(input)
+	parsed := gjson.Parse(got)
+
+	if !parsed.Get("properties.$schema").Exists() {
+		t.Errorf("expected property named '$schema' to be preserved")
+	}
+	if parsed.Get("properties.$schema.$schema").Exists() {
+		t.Errorf("expected properties.$schema.$schema dialect keyword to be removed")
+	}
+	if parsed.Get("properties.$schema.$id").Exists() {
+		t.Errorf("expected properties.$schema.$id dialect keyword to be removed")
+	}
+	if !parsed.Get("properties.$id").Exists() {
+		t.Errorf("expected property named '$id' to be preserved")
+	}
+	if gotDefaultID := parsed.Get("properties.config.default.$id").String(); gotDefaultID != "default-id-123" {
+		t.Errorf("expected literal default.$id to be preserved, got %q", gotDefaultID)
+	}
+
+	// Test empty / null / invalid fallback
+	if emptyGot := normalizeToolParameters(""); emptyGot != `{"type":"object","properties":{}}` {
+		t.Errorf("expected empty string to normalize to empty object schema, got %s", emptyGot)
+	}
+	if nullGot := normalizeToolParameters("null"); nullGot != `{"type":"object","properties":{}}` {
+		t.Errorf("expected null to normalize to empty object schema, got %s", nullGot)
+	}
+
+	// Test array union type preservation (e.g. ["object", "null"])
+	unionInput := `{"type": ["object", "null"]}`
+	unionGot := normalizeToolParameters(unionInput)
+	unionParsed := gjson.Parse(unionGot)
+	typeArr := unionParsed.Get("type").Array()
+	if len(typeArr) != 2 || typeArr[0].String() != "object" || typeArr[1].String() != "null" {
+		t.Errorf("expected union type array to be preserved, got %s", unionParsed.Get("type").Raw)
+	}
+	if !unionParsed.Get("properties").Exists() {
+		t.Errorf("expected properties to be added when object is part of union type")
+	}
+}
+
+func TestConvertClaudeRequestToCodex_StripsNestedToolSchemaMeta(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-5",
+		"messages": [{"role": "user", "content": "hi"}],
+		"tools": [{
+			"name": "lookup",
+			"description": "Lookup",
+			"input_schema": {
+				"type": "object",
+				"$schema": "http://json-schema.org/draft-07/schema#",
+				"properties": {
+					"q": {
+						"type": "string",
+						"$schema": "http://json-schema.org/draft-07/schema#",
+						"$id": "https://example.invalid/q"
+					},
+					"tags": {
+						"type": "array",
+						"items": {"type": "string", "$id": "https://example.invalid/tag"}
+					},
+					"mode": {
+						"anyOf": [
+							{"type": "string", "$schema": "http://json-schema.org/draft-07/schema#"},
+							{"type": "null"}
+						]
+					}
+				},
+				"$defs": {
+					"hint": {"type": "string", "$id": "https://example.invalid/hint"}
+				},
+				"required": ["q"]
+			}
+		}]
+	}`
+
+	translated, _ := ConvertClaudeRequestToCodex("gpt-5", []byte(inputJSON), false)
+	tools := gjson.GetBytes(translated, "tools").Array()
+	if len(tools) == 0 {
+		t.Fatalf("expected tools in translated payload, got: %s", translated)
+	}
+	params := tools[0].Get("parameters")
+	if params.Get("$schema").Exists() {
+		t.Errorf("expected root parameters.$schema to be removed, got %v", params.Get("$schema").Raw)
+	}
+	if params.Get("properties.q.$schema").Exists() {
+		t.Errorf("expected parameters.properties.q.$schema to be removed, got %v", params.Get("properties.q.$schema").Raw)
+	}
+	if params.Get("properties.q.$id").Exists() {
+		t.Errorf("expected parameters.properties.q.$id to be removed, got %v", params.Get("properties.q.$id").Raw)
+	}
+	if params.Get("properties.tags.items.$id").Exists() {
+		t.Errorf("expected parameters.properties.tags.items.$id to be removed, got %v", params.Get("properties.tags.items.$id").Raw)
+	}
+	if params.Get("properties.mode.anyOf.0.$schema").Exists() {
+		t.Errorf("expected parameters.properties.mode.anyOf.0.$schema to be removed, got %v", params.Get("properties.mode.anyOf.0.$schema").Raw)
+	}
+	if params.Get("$defs.hint.$id").Exists() {
+		t.Errorf("expected parameters.$defs.hint.$id to be removed, got %v", params.Get("$defs.hint.$id").Raw)
+	}
+}
+
+func TestConvertClaudeRequestToCodex_StripsUnsupportedUnicodePropertyEscapePatterns(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-5.6",
+		"messages": [{"role": "user", "content": "hello"}],
+		"tools": [{
+			"name": "Artifact",
+			"description": "Render an HTML file to an Artifact",
+			"input_schema": {
+				"type": "object",
+				"properties": {
+					"field": {
+						"type": "string",
+						"description": "field to replace",
+						"pattern": "^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\"\\\\./[\\]]{1,200}$"
+					},
+					"asset_id": {
+						"type": "string",
+						"pattern": "^[0-9a-f]{32}$"
+					},
+					"lookahead_safe": {
+						"type": "string",
+						"pattern": "^(?!__.*__$).{1,200}$"
+					},
+					"literal_p": {
+						"type": "string",
+						"pattern": "^\\\\p{Cc}$"
+					},
+					"nested": {
+						"type": "object",
+						"properties": {
+							"inner_field": {
+								"type": "string",
+								"pattern": "\\P{L}+"
+							}
+						}
+					},
+					"union_field": {
+						"anyOf": [
+							{
+								"type": "string",
+								"pattern": "\\p{N}+"
+							},
+							{
+								"type": "null"
+							}
+						]
+					}
+				},
+				"required": ["field"]
+			}
+		}]
+	}`
+
+	translated, _ := ConvertClaudeRequestToCodex("gpt-5.6", []byte(inputJSON), false)
+	tools := gjson.GetBytes(translated, "tools").Array()
+	if len(tools) == 0 {
+		t.Fatalf("expected tools in translated payload, got: %s", translated)
+	}
+	params := tools[0].Get("parameters")
+
+	// The \p{...} pattern on field must be removed to avoid Python re failure upstream
+	if params.Get("properties.field.pattern").Exists() {
+		t.Errorf("expected properties.field.pattern to be removed, got %v", params.Get("properties.field.pattern").Raw)
+	}
+	// Other attributes on field must be preserved
+	if got := params.Get("properties.field.type").String(); got != "string" {
+		t.Errorf("expected properties.field.type == 'string', got %q", got)
+	}
+	if got := params.Get("properties.field.description").String(); got != "field to replace" {
+		t.Errorf("expected properties.field.description == 'field to replace', got %q", got)
+	}
+
+	// Valid patterns without unescaped \p must be preserved
+	if got := params.Get("properties.asset_id.pattern").String(); got != "^[0-9a-f]{32}$" {
+		t.Errorf("expected asset_id.pattern preserved, got %q", got)
+	}
+	if got := params.Get("properties.lookahead_safe.pattern").String(); got != "^(?!__.*__$).{1,200}$" {
+		t.Errorf("expected lookahead_safe.pattern preserved, got %q", got)
+	}
+	if got := params.Get("properties.literal_p.pattern").String(); got != "^\\\\p{Cc}$" {
+		t.Errorf("expected literal_p.pattern preserved, got %q", got)
+	}
+
+	// Nested object with \P{L}+ must have its pattern removed
+	if params.Get("properties.nested.properties.inner_field.pattern").Exists() {
+		t.Errorf("expected properties.nested.properties.inner_field.pattern to be removed, got %v", params.Get("properties.nested.properties.inner_field.pattern").Raw)
+	}
+	if got := params.Get("properties.nested.properties.inner_field.type").String(); got != "string" {
+		t.Errorf("expected nested inner_field.type preserved, got %q", got)
+	}
+
+	// Union anyOf with \p{N}+ must have its pattern removed
+	if params.Get("properties.union_field.anyOf.0.pattern").Exists() {
+		t.Errorf("expected union_field.anyOf.0.pattern to be removed, got %v", params.Get("properties.union_field.anyOf.0.pattern").Raw)
+	}
+
+	// Required array must be preserved
+	if got := params.Get("required.0").String(); got != "field" {
+		t.Errorf("expected required.0 == 'field', got %q", got)
+	}
+}
+
+func TestConvertClaudeRequestToCodex_StripsPatternPropertiesIncompatibleKeys(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-5.6",
+		"messages": [{"role": "user", "content": "hello"}],
+		"tools": [{
+			"name": "pattern_tool",
+			"input_schema": {
+				"type": "object",
+				"patternProperties": {
+					"^\\\\p{L}+$": {
+						"type": "string"
+					},
+					"^[a-z]+$": {
+						"type": "number"
+					}
+				}
+			}
+		}]
+	}`
+
+	translated, _ := ConvertClaudeRequestToCodex("gpt-5.6", []byte(inputJSON), false)
+	tools := gjson.GetBytes(translated, "tools").Array()
+	if len(tools) == 0 {
+		t.Fatalf("expected tools in translated payload, got: %s", translated)
+	}
+	params := tools[0].Get("parameters")
+
+	patternProps := params.Get("patternProperties").Map()
+	if _, exists := patternProps[`^\p{L}+$`]; exists {
+		t.Errorf("expected patternProperties key '^\\\\p{L}+$' to be removed, got: %s", params.Get("patternProperties").Raw)
+	}
+	if _, exists := patternProps[`^[a-z]+$`]; !exists {
+		t.Errorf("expected patternProperties key '^[a-z]+$' to be preserved, got: %s", params.Get("patternProperties").Raw)
+	}
 }
