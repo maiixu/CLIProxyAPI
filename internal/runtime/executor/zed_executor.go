@@ -402,6 +402,11 @@ func (e *ZedExecutor) consume(ctx context.Context, response *http.Response, emit
 }
 
 func (e *ZedExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (result cliproxyexecutor.Response, err error) {
+	normalized, toolNames, errNames := zedFlattenNamespaces(req.Payload)
+	if errNames != nil {
+		return result, errNames
+	}
+	req.Payload = normalized
 	payload, errPayload := e.payload(req, opts)
 	if errPayload != nil {
 		return result, errPayload
@@ -414,7 +419,7 @@ func (e *ZedExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	var usageBuffer helps.StreamUsageBuffer
 	err = e.consume(ctx, response, func(frame helps.ZedFrame) error {
 		if len(frame.Response) > 0 {
-			result.Payload = bytes.Clone(frame.Response)
+			result.Payload = bytes.Clone(zedRestoreNamespaces(frame.Response, toolNames))
 		}
 		usageBuffer.Observe(helps.ParseCodexUsage(frame.Event))
 		return nil
@@ -431,6 +436,11 @@ func (e *ZedExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 }
 
 func (e *ZedExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	normalized, toolNames, errNames := zedFlattenNamespaces(req.Payload)
+	if errNames != nil {
+		return nil, errNames
+	}
+	req.Payload = normalized
 	payload, errPayload := e.payload(req, opts)
 	if errPayload != nil {
 		return nil, errPayload
@@ -446,7 +456,7 @@ func (e *ZedExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		var usageBuffer helps.StreamUsageBuffer
 		errConsume := e.consume(ctx, response, func(frame helps.ZedFrame) error {
 			usageBuffer.Observe(helps.ParseCodexUsage(frame.Event))
-			payload := append([]byte("data: "), frame.Event...)
+			payload := append([]byte("data: "), zedRestoreNamespaces(frame.Event, toolNames)...)
 			payload = append(payload, '\n', '\n')
 			select {
 			case chunks <- cliproxyexecutor.StreamChunk{Payload: payload}:

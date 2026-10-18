@@ -125,13 +125,21 @@ credentials are retained for recovery; short-lived model JWTs refresh in this
 provider, while revoked login credentials still require re-authentication.
 
 
-## October17 candidate
+## October17 acceptance
 
 The v8.0.32 merge retains the native Zed executor and model prefix. Zed unit and
-race tests pass; registration fixtures now register/update auth with the manager
-before publishing models, matching upstream's new publication fence.
+race tests pass; registration fixtures register/update auth with the manager
+before publishing models, matching upstream's publication fence.
 
-The isolated candidate advertises `zed/gpt-5.6-sol`, but the real upstream request
-returns `Unauthorized`. Production remains on7.2.152-zed pending login recovery
-and successful real tools/usage acceptance. Do not infer runtime readiness from
-model discovery or unit tests. No credential or security policy was changed.
+The existing Student login was restored through official GitHub/SMS authorization;
+the returned Zed identity matched the existing account. Native function-call/result
+roundtrip passed with usage. A full Codex worker exposed a Zed schema limitation:
+namespace tool wrappers are rejected. The executor now flattens those wrappers
+using request-local collision-checked aliases, maps native input history, and
+restores names and namespaces in streamed and terminal output. Function/custom
+schemas, arguments and result receipts are preserved. No tool permission changes.
+
+After adaptation, the real Codex worker read a fixture, wrote its computed value,
+executed an independent assertion and returned ZED_TOOLS_OK. Namespace mapping,
+original Zed executor/registration and race tests passed. Production rollout is
+pending PR approval and an idle gateway; preserve previous binary and auth backup.
