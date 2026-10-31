@@ -181,3 +181,17 @@ real-attempt authorization. Do not guess an organization or replace credentials.
 
 Sources: [official client](https://github.com/zed-industries/zed/blob/14b7b0ef3764d62a85070c8b5ccea105a2ad3235/crates/cloud_api_client/src/cloud_api_client.rs),
 [request types](https://github.com/zed-industries/zed/blob/14b7b0ef3764d62a85070c8b5ccea105a2ad3235/crates/cloud_api_types/src/cloud_api_types.rs).
+
+## Token contract preparation after the failed attempt
+
+A read-only GET to the official `/client/users/me` endpoint verified the same
+legacy user identity, exactly one personal organization, and that organization
+as the server's default. The private observation is retained locally; production
+authentication and billing selection were not changed.
+
+The candidate now requires a nonempty, verified `organization_id` for token
+exchange and sends the official JSON body. Missing organization metadata fails
+before a network request; token-cache keys include organization identity. Focused
+local tests cover the request body, missing-field failure and cache separation;
+Zed race tests and executor/helper/service packages pass. No second real request
+was made. Deployment remains blocked on separately authorized real acceptance.

@@ -101,7 +101,8 @@ func (e *ZedExecutor) credentials(auth *cliproxyauth.Auth) (string, [32]byte, er
 		return "", [32]byte{}, fmt.Errorf("zed: account credential must be a JSON object")
 	}
 	header := userID + " " + string(credential)
-	return header, sha256.Sum256([]byte(header)), nil
+	organizationID, _ := auth.Metadata["organization_id"].(string)
+	return header, sha256.Sum256([]byte(header + "\x00" + strings.TrimSpace(organizationID))), nil
 }
 
 func (e *ZedExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
@@ -133,6 +134,11 @@ func (e *ZedExecutor) refresh(ctx context.Context, auth *cliproxyauth.Auth, reje
 	if errCredentials != nil {
 		return nil, errCredentials
 	}
+	organizationID, _ := auth.Metadata["organization_id"].(string)
+	organizationID = strings.TrimSpace(organizationID)
+	if organizationID == "" {
+		return nil, fmt.Errorf("zed: verified organization_id is required for token exchange")
+	}
 	e.refreshMu.Lock()
 	defer e.refreshMu.Unlock()
 	if cached := e.tokens[key]; e.fresh(cached) && e.token(cached) != rejectedToken {
@@ -156,7 +162,11 @@ func (e *ZedExecutor) refresh(ctx context.Context, auth *cliproxyauth.Auth, reje
 	}
 	credentialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	request, errRequest := http.NewRequestWithContext(credentialCtx, http.MethodPost, e.baseURL+"/client/llm_tokens", http.NoBody)
+	tokenRequest, errMarshal := json.Marshal(map[string]string{"organization_id": organizationID})
+	if errMarshal != nil {
+		return nil, fmt.Errorf("zed: encode token request: %w", errMarshal)
+	}
+	request, errRequest := http.NewRequestWithContext(credentialCtx, http.MethodPost, e.baseURL+"/client/llm_tokens", bytes.NewReader(tokenRequest))
 	if errRequest != nil {
 		return nil, fmt.Errorf("zed: create credential request: %w", errRequest)
 	}
