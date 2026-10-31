@@ -1,6 +1,6 @@
 # Native Zed Sol worker on cloudtop
 
-This branch adds a native Zed Responses provider to CLIProxyAPI v8.0.32.
+This branch adds a native Zed Responses provider to CLIProxyAPI v8.0.47.
 The target runtime is Paseo -> Codex worker -> CLIProxyAPI -> Zed.
 The ordinary Codex, Claude subscription and Antigravity routes remain separate.
 
@@ -143,3 +143,16 @@ After adaptation, the real Codex worker read a fixture, wrote its computed value
 executed an independent assertion and returned ZED_TOOLS_OK. Namespace mapping,
 original Zed executor/registration and race tests passed. Production rollout is
 pending PR approval and an idle gateway; preserve previous binary and auth backup.
+
+## October 30 candidate
+
+The v8.0.47 candidate retains the Zed executor and native tool namespace adapter.
+Executor, helper and service package tests pass, as do the Zed race tests and
+a native ARM64 build. Go 1.27 changed the JSON string-error suffix; diagnostics
+now recognize both forms without logging raw tool contents.
+
+Production remains on 8.0.32. The real Zed worker acceptance consumes credits
+and has not run in this maintenance task. Keep activation blocked until the
+required native tool/result and consumer checks pass under authorized spending,
+and preserve prior binary/config/auth state. No Paseo configuration change is
+needed for this gateway candidate.
