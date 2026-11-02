@@ -41,6 +41,9 @@ type ZedExecutor struct {
 	now       func() time.Time
 	refreshMu sync.Mutex
 	tokens    map[[32]byte]*cliproxyauth.Auth
+	// stale records a token Zed flagged as expired/outdated on a successful
+	// response; the next request exchanges a new one before using it.
+	stale map[[32]byte]string
 }
 
 func NewZedExecutor(cfg *config.Config) *ZedExecutor {
@@ -115,8 +118,26 @@ func (e *ZedExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
 	}
 	e.refreshMu.Lock()
 	defer e.refreshMu.Unlock()
+	if staleToken, ok := e.stale[key]; ok && staleToken == e.token(auth) {
+		return true
+	}
 	cached := e.tokens[key]
 	return e.fresh(cached) && e.token(cached) != e.token(auth)
+}
+
+// markStale flags a token that still worked but that Zed reported as expired
+// or outdated, so the next request refreshes it without disturbing this one.
+func (e *ZedExecutor) markStale(auth *cliproxyauth.Auth) {
+	_, key, errCredentials := e.credentials(auth)
+	if errCredentials != nil {
+		return
+	}
+	e.refreshMu.Lock()
+	defer e.refreshMu.Unlock()
+	if e.stale == nil {
+		e.stale = make(map[[32]byte]string)
+	}
+	e.stale[key] = e.token(auth)
 }
 
 func (e *ZedExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
@@ -141,7 +162,11 @@ func (e *ZedExecutor) refresh(ctx context.Context, auth *cliproxyauth.Auth, reje
 	}
 	e.refreshMu.Lock()
 	defer e.refreshMu.Unlock()
-	if cached := e.tokens[key]; e.fresh(cached) && e.token(cached) != rejectedToken {
+	cached := e.tokens[key]
+	if staleToken, ok := e.stale[key]; ok && e.token(cached) == staleToken {
+		cached = nil
+	}
+	if e.fresh(cached) && e.token(cached) != rejectedToken {
 		updated := auth.Clone()
 		if updated.Metadata == nil {
 			updated.Metadata = make(map[string]any)
@@ -205,6 +230,7 @@ func (e *ZedExecutor) refresh(ctx context.Context, auth *cliproxyauth.Auth, reje
 		e.tokens = make(map[[32]byte]*cliproxyauth.Auth)
 	}
 	e.tokens[key] = updated.Clone()
+	delete(e.stale, key)
 	return updated, nil
 }
 
@@ -325,12 +351,19 @@ func (e *ZedExecutor) open(ctx context.Context, auth *cliproxyauth.Auth, payload
 		if errDo != nil {
 			return nil, fmt.Errorf("zed: completion request: %w", errDo)
 		}
-		needsRefresh := response.StatusCode == http.StatusUnauthorized ||
-			len(response.Header.Values("x-zed-expired-token")) > 0 ||
+		tokenHeader := len(response.Header.Values("x-zed-expired-token")) > 0 ||
 			len(response.Header.Values("x-zed-outdated-token")) > 0
-		if response.StatusCode == http.StatusOK && !needsRefresh {
+		if response.StatusCode == http.StatusOK {
+			// The stream is already live; never discard it. Refresh before the
+			// next request instead.
+			if tokenHeader {
+				e.markStale(current)
+			}
 			return response, nil
 		}
+		// Token headers trigger refresh+retry only on non-2xx responses.
+		nonSuccess := response.StatusCode < 200 || response.StatusCode >= 300
+		needsRefresh := nonSuccess && (response.StatusCode == http.StatusUnauthorized || tokenHeader)
 		body, errRead := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 		e.closeBody(response.Body)
 		if errRead != nil {
@@ -345,9 +378,6 @@ func (e *ZedExecutor) open(ctx context.Context, auth *cliproxyauth.Auth, payload
 				return nil, errRefresh
 			}
 			continue
-		}
-		if response.StatusCode == http.StatusOK {
-			return nil, &helps.ZedError{Code: http.StatusUnauthorized, Message: "upstream rejected the refreshed token"}
 		}
 		upstreamError := helps.NewZedError(response.StatusCode, body)
 		if needsRefresh {
