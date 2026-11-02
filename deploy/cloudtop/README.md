@@ -54,9 +54,9 @@ The catalog limits input context to Zed's 272k window and disables Responses Lit
 ## Maintaining the fork
 
 The personal fork is https://github.com/maiixu/CLIProxyAPI. Keep Zed changes on
-`zed-v7.2.152`, based on upstream tag `v7.2.152`
-(`c76dfd4e0edabab9000628b1560ab8ab379eadb8`); the upstream-tracking `main` branch
-is separate. Open maintenance PRs against `zed-v7.2.152`, not `main`.
+`claude/maintenance-8047`, which carries the Zed provider work merged onto upstream
+`v8.0.47`; the upstream-tracking `main` branch is separate. Open maintenance PRs
+against `claude/maintenance-8047`, not `main`.
 
 Build in a dedicated worktree, copy the accepted binary and deployment files into
 an immutable release under `~/.local/libexec/cliproxyapi/releases/`, and record its
