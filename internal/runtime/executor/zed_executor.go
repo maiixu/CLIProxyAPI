@@ -23,6 +23,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -35,15 +36,19 @@ const (
 // ZedExecutor forwards native Responses requests through a Zed account.
 // The private transport fields are test seams, never credential/config overrides.
 type ZedExecutor struct {
-	cfg       *config.Config
-	baseURL   string
-	client    *http.Client
-	now       func() time.Time
-	refreshMu sync.Mutex
-	tokens    map[[32]byte]*cliproxyauth.Auth
+	cfg     *config.Config
+	baseURL string
+	client  *http.Client
+	now     func() time.Time
+	// tokensMu guards tokens and stale only; it is never held during I/O.
+	tokensMu sync.RWMutex
+	tokens   map[[32]byte]*cliproxyauth.Auth
 	// stale records a token Zed flagged as expired/outdated on a successful
 	// response; the next request exchanges a new one before using it.
 	stale map[[32]byte]string
+	// exchanges coalesces concurrent token exchanges per account so one slow
+	// exchange never blocks requests for other accounts.
+	exchanges singleflight.Group
 }
 
 func NewZedExecutor(cfg *config.Config) *ZedExecutor {
@@ -116,8 +121,8 @@ func (e *ZedExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
 	if errCredentials != nil {
 		return true
 	}
-	e.refreshMu.Lock()
-	defer e.refreshMu.Unlock()
+	e.tokensMu.RLock()
+	defer e.tokensMu.RUnlock()
 	if staleToken, ok := e.stale[key]; ok && staleToken == e.token(auth) {
 		return true
 	}
@@ -132,8 +137,8 @@ func (e *ZedExecutor) markStale(auth *cliproxyauth.Auth) {
 	if errCredentials != nil {
 		return
 	}
-	e.refreshMu.Lock()
-	defer e.refreshMu.Unlock()
+	e.tokensMu.Lock()
+	defer e.tokensMu.Unlock()
 	if e.stale == nil {
 		e.stale = make(map[[32]byte]string)
 	}
@@ -148,8 +153,36 @@ func (e *ZedExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 	return e.refresh(ctx, auth, "")
 }
 
-// refresh serializes exchanges, including a retry after an actual HTTP 401.
-// RequestAuthPreparer persists this snapshot; concurrent requests reuse its JWT.
+// cachedToken returns the cached token snapshot for key when it is fresh, not
+// flagged stale, and not the token the caller saw rejected.
+func (e *ZedExecutor) cachedToken(key [32]byte, rejectedToken string) *cliproxyauth.Auth {
+	e.tokensMu.RLock()
+	defer e.tokensMu.RUnlock()
+	cached := e.tokens[key]
+	if staleToken, ok := e.stale[key]; ok && e.token(cached) == staleToken {
+		return nil
+	}
+	if !e.fresh(cached) || e.token(cached) == rejectedToken {
+		return nil
+	}
+	return cached
+}
+
+// withToken copies the exchanged token fields onto a clone of auth.
+func (e *ZedExecutor) withToken(auth, token *cliproxyauth.Auth) *cliproxyauth.Auth {
+	updated := auth.Clone()
+	if updated.Metadata == nil {
+		updated.Metadata = make(map[string]any)
+	}
+	for _, field := range []string{"access_token", "expires_at", "system_id"} {
+		updated.Metadata[field] = token.Metadata[field]
+	}
+	return updated
+}
+
+// refresh coordinates exchanges per account, including a retry after an actual
+// HTTP 401. RequestAuthPreparer persists this snapshot; concurrent requests for
+// the same account reuse its JWT while other accounts proceed independently.
 func (e *ZedExecutor) refresh(ctx context.Context, auth *cliproxyauth.Auth, rejectedToken string) (*cliproxyauth.Auth, error) {
 	header, key, errCredentials := e.credentials(auth)
 	if errCredentials != nil {
@@ -160,28 +193,45 @@ func (e *ZedExecutor) refresh(ctx context.Context, auth *cliproxyauth.Auth, reje
 	if organizationID == "" {
 		return nil, fmt.Errorf("zed: verified organization_id is required for token exchange")
 	}
-	e.refreshMu.Lock()
-	defer e.refreshMu.Unlock()
-	cached := e.tokens[key]
-	if staleToken, ok := e.stale[key]; ok && e.token(cached) == staleToken {
-		cached = nil
-	}
-	if e.fresh(cached) && e.token(cached) != rejectedToken {
-		updated := auth.Clone()
-		if updated.Metadata == nil {
-			updated.Metadata = make(map[string]any)
+	systemID, _ := auth.Metadata["system_id"].(string)
+	// A joined exchange may return the token this caller saw rejected; then
+	// start one more exchange of its own.
+	for attempt := 0; attempt < 2; attempt++ {
+		if cached := e.cachedToken(key, rejectedToken); cached != nil {
+			return e.withToken(auth, cached), nil
 		}
-		for _, field := range []string{"access_token", "expires_at", "system_id"} {
-			updated.Metadata[field] = cached.Metadata[field]
+		initiatorRejected := rejectedToken
+		// The shared exchange must not fail because one waiting caller left.
+		flightCtx := context.WithoutCancel(ctx)
+		results := e.exchanges.DoChan(string(key[:]), func() (any, error) {
+			if cached := e.cachedToken(key, initiatorRejected); cached != nil {
+				return cached, nil
+			}
+			return e.exchange(flightCtx, auth, key, header, organizationID, systemID)
+		})
+		var result singleflight.Result
+		select {
+		case result = <-results:
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
-		return updated, nil
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		token, _ := result.Val.(*cliproxyauth.Auth)
+		if token == nil {
+			return nil, fmt.Errorf("zed: credential exchange returned no token")
+		}
+		if rejectedToken == "" || e.token(token) != rejectedToken {
+			return e.withToken(auth, token), nil
+		}
 	}
+	return nil, fmt.Errorf("zed: credential exchange kept returning a rejected token")
+}
 
-	updated := auth.Clone()
-	if updated.Metadata == nil {
-		updated.Metadata = make(map[string]any)
-	}
-	systemID, _ := updated.Metadata["system_id"].(string)
+// exchange performs one /client/llm_tokens request and caches the result.
+// It must be called without holding tokensMu.
+func (e *ZedExecutor) exchange(ctx context.Context, auth *cliproxyauth.Auth, key [32]byte, header, organizationID, systemID string) (*cliproxyauth.Auth, error) {
 	if systemID == "" {
 		systemID = uuid.NewString()
 	}
@@ -216,22 +266,25 @@ func (e *ZedExecutor) refresh(ctx context.Context, auth *cliproxyauth.Auth, reje
 	if errDecode := json.Unmarshal(body, &payload); errDecode != nil || strings.TrimSpace(payload.Token) == "" {
 		return nil, fmt.Errorf("zed: credential exchange returned no token")
 	}
-	updated.Metadata["access_token"] = payload.Token
 	// The fresh JWT must supply an expiry; never treat an unknown token lifetime as permanent.
-	delete(updated.Metadata, "expires_at")
 	tokenOnly := &cliproxyauth.Auth{Metadata: map[string]any{"access_token": payload.Token}}
 	expiry, ok := tokenOnly.AccessTokenExpirationTime()
 	if !ok || !expiry.After(e.now().Add(time.Minute)) {
 		return nil, fmt.Errorf("zed: credential exchange returned an expired or invalid token")
 	}
-	updated.Metadata["expires_at"] = expiry.UTC().Format(time.RFC3339)
-	updated.Metadata["system_id"] = systemID
+	token := &cliproxyauth.Auth{Metadata: map[string]any{
+		"access_token": payload.Token,
+		"expires_at":   expiry.UTC().Format(time.RFC3339),
+		"system_id":    systemID,
+	}}
+	e.tokensMu.Lock()
 	if e.tokens == nil {
 		e.tokens = make(map[[32]byte]*cliproxyauth.Auth)
 	}
-	e.tokens[key] = updated.Clone()
+	e.tokens[key] = token
 	delete(e.stale, key)
-	return updated, nil
+	e.tokensMu.Unlock()
+	return token, nil
 }
 
 func (e *ZedExecutor) httpClient(ctx context.Context, auth *cliproxyauth.Auth) *http.Client {

@@ -444,9 +444,22 @@ func authHasRefreshCredential(auth *Auth) bool {
 	if _, hasSIWC, _ := CodexSIWCNeedsRefresh(auth, time.Now()); hasSIWC {
 		return true
 	}
+	// Zed exchanges its long-lived account credential for a new short-lived
+	// JWT, so a 401 (including a transient token-exchange 401) is recoverable.
+	if zedHasExchangeCredential(auth) {
+		return true
+	}
 	// Meta exchanges its device token for a replacement API key after a 401.
 	return auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta") &&
 		(authMetadataString(auth, "dca_token") != "" || strings.TrimSpace(auth.Attributes["dca_token"]) != "")
+}
+
+func zedHasExchangeCredential(auth *Auth) bool {
+	if auth == nil || auth.Metadata == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "zed") {
+		return false
+	}
+	credential, ok := auth.Metadata["credential"].(map[string]any)
+	return ok && len(credential) > 0 && authMetadataString(auth, "organization_id") != ""
 }
 
 // CredentialsChanged reports whether authentication credentials (tokens or API keys)
