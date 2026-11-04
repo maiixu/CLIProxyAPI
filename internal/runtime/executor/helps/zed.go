@@ -17,6 +17,9 @@ type ZedError struct {
 	Message    string
 	RequestID  string
 	RetryDelay *time.Duration
+	// RefreshedToken is set when upstream rejected a token the executor had
+	// just obtained by refreshing; the auth manager must not refresh again.
+	RefreshedToken string
 }
 
 func (e *ZedError) Error() string {
@@ -27,6 +30,9 @@ func (e *ZedError) Error() string {
 }
 func (e *ZedError) StatusCode() int            { return e.Code }
 func (e *ZedError) RetryAfter() *time.Duration { return e.RetryDelay }
+
+// RejectedAccessToken implements cliproxyauth.RefreshedTokenRejectedError.
+func (e *ZedError) RejectedAccessToken() string { return e.RefreshedToken }
 
 // ZedFrame is either an unchanged Responses event or a transport status.
 type ZedFrame struct {

@@ -36,7 +36,8 @@ func zedTestAuth() *cliproxyauth.Auth {
 	return &cliproxyauth.Auth{
 		ID: "zed-test.json", Provider: "zed", Prefix: "zed",
 		Metadata: map[string]any{
-			"type": "zed", "user_id": "17", "credential": map[string]any{"access_token": "test-credential"},
+			"organization_id": "test-personal-org",
+			"type":            "zed", "user_id": "17", "credential": map[string]any{"access_token": "test-credential"},
 			"access_token": zedTestJWT(zedTestNow.Add(time.Hour), "original"),
 		},
 	}
@@ -623,7 +624,6 @@ func TestZedRepeatedTokenFailuresRemainUnauthorized(t *testing.T) {
 		{"HTTP unauthorized", "", http.StatusUnauthorized},
 		{"expired forbidden", "x-zed-expired-token", http.StatusForbidden},
 		{"outdated forbidden", "x-zed-outdated-token", http.StatusForbidden},
-		{"expired success", "x-zed-expired-token", http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var exchanges, completions atomic.Int32
@@ -840,5 +840,125 @@ func TestZedMarksOnlyInferenceTransportAttempts(t *testing.T) {
 				t.Fatalf("upstream attempted=%v, want %v", got, want)
 			}
 		})
+	}
+}
+
+func TestZedRefreshRequiresVerifiedOrganizationAndSendsJSON(t *testing.T) {
+	var exchanges atomic.Int32
+	executor := zedTestExecutor(t, func(w http.ResponseWriter, r *http.Request) {
+		exchanges.Add(1)
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body["organization_id"] != "test-personal-org" || len(body) != 1 {
+			t.Errorf("unexpected token request: %v", body)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Error("missing JSON content type")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": zedTestJWT(zedTestNow.Add(time.Hour), "new")})
+	})
+	auth := zedTestAuth()
+	delete(auth.Metadata, "organization_id")
+	if _, err := executor.Refresh(context.Background(), auth); err == nil {
+		t.Fatal("missing organization accepted")
+	}
+	if exchanges.Load() != 0 {
+		t.Fatal("missing organization made a network request")
+	}
+	auth.Metadata["organization_id"] = "test-personal-org"
+	if _, err := executor.Refresh(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	if exchanges.Load() != 1 {
+		t.Fatal("expected one token exchange")
+	}
+	other := auth.Clone()
+	other.Metadata["organization_id"] = "another-org"
+	_, a, _ := executor.credentials(auth)
+	_, b, _ := executor.credentials(other)
+	if a == b {
+		t.Fatal("different organizations share a token cache key")
+	}
+}
+
+func TestZedSuccessWithTokenHeaderStreamsAndRefreshesNextRequest(t *testing.T) {
+	for _, header := range []string{"x-zed-expired-token", "x-zed-outdated-token"} {
+		t.Run(header, func(t *testing.T) {
+			auth := zedTestAuth()
+			original := auth.Metadata["access_token"].(string)
+			fresh := zedTestJWT(zedTestNow.Add(2*time.Hour), "renewed")
+			var exchanges, completions atomic.Int32
+			var mu sync.Mutex
+			var events []string
+			executor := zedTestExecutor(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/client/llm_tokens" {
+					exchanges.Add(1)
+					mu.Lock()
+					events = append(events, "exchange")
+					mu.Unlock()
+					_ = json.NewEncoder(w).Encode(map[string]string{"token": fresh})
+					return
+				}
+				completions.Add(1)
+				mu.Lock()
+				events = append(events, "completion:"+strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+				mu.Unlock()
+				if r.Header.Get("Authorization") == "Bearer "+original {
+					w.Header().Set(header, "true")
+				}
+				_, _ = fmt.Fprintln(w, zedTestTerminal)
+			})
+			request, options := zedTestRequest()
+			result, errExecute := executor.Execute(context.Background(), auth, request, options)
+			if errExecute != nil {
+				t.Fatal(errExecute)
+			}
+			if !bytes.Contains(result.Payload, []byte("resp_test")) {
+				t.Fatalf("stream was not passed through: %s", result.Payload)
+			}
+			if completions.Load() != 1 || exchanges.Load() != 0 {
+				t.Fatalf("200 with token header was retried: completions=%d exchanges=%d", completions.Load(), exchanges.Load())
+			}
+			if !executor.ShouldPrepareRequestAuth(auth) {
+				t.Fatal("flagged token was not marked stale")
+			}
+			if _, errExecute = executor.Execute(context.Background(), auth, request, options); errExecute != nil {
+				t.Fatal(errExecute)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			want := []string{"completion:" + original, "exchange", "completion:" + fresh}
+			if !reflect.DeepEqual(events, want) {
+				t.Fatalf("unexpected request order: %v", events)
+			}
+		})
+	}
+}
+
+func TestZedUnauthorizedStillRefreshesAndRetriesOnce(t *testing.T) {
+	fresh := zedTestJWT(zedTestNow.Add(2*time.Hour), "renewed")
+	var exchanges, completions atomic.Int32
+	executor := zedTestExecutor(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/client/llm_tokens" {
+			exchanges.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": fresh})
+			return
+		}
+		completions.Add(1)
+		if r.Header.Get("Authorization") != "Bearer "+fresh {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = fmt.Fprintln(w, `{"error":{"message":"expired token"}}`)
+			return
+		}
+		_, _ = fmt.Fprintln(w, zedTestTerminal)
+	})
+	request, options := zedTestRequest()
+	if _, errExecute := executor.Execute(context.Background(), zedTestAuth(), request, options); errExecute != nil {
+		t.Fatal(errExecute)
+	}
+	if exchanges.Load() != 1 || completions.Load() != 2 {
+		t.Fatalf("401 must refresh and retry exactly once: exchanges=%d completions=%d", exchanges.Load(), completions.Load())
 	}
 }

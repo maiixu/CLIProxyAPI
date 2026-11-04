@@ -1,6 +1,6 @@
 # Native Zed Sol worker on cloudtop
 
-This branch adds a native Zed Responses provider to CLIProxyAPI v8.0.32.
+This branch adds a native Zed Responses provider to CLIProxyAPI v8.0.47.
 The target runtime is Paseo -> Codex worker -> CLIProxyAPI -> Zed.
 The ordinary Codex, Claude subscription and Antigravity routes remain separate.
 
@@ -54,9 +54,9 @@ The catalog limits input context to Zed's 272k window and disables Responses Lit
 ## Maintaining the fork
 
 The personal fork is https://github.com/maiixu/CLIProxyAPI. Keep Zed changes on
-`zed-v7.2.152`, based on upstream tag `v7.2.152`
-(`c76dfd4e0edabab9000628b1560ab8ab379eadb8`); the upstream-tracking `main` branch
-is separate. Open maintenance PRs against `zed-v7.2.152`, not `main`.
+`claude/maintenance-8047`, which carries the Zed provider work merged onto upstream
+`v8.0.47`; the upstream-tracking `main` branch is separate. Open maintenance PRs
+against `claude/maintenance-8047`, not `main`.
 
 Build in a dedicated worktree, copy the accepted binary and deployment files into
 an immutable release under `~/.local/libexec/cliproxyapi/releases/`, and record its
@@ -143,3 +143,55 @@ After adaptation, the real Codex worker read a fixture, wrote its computed value
 executed an independent assertion and returned ZED_TOOLS_OK. Namespace mapping,
 original Zed executor/registration and race tests passed. Production rollout is
 pending PR approval and an idle gateway; preserve previous binary and auth backup.
+
+## October 30 candidate
+
+The v8.0.47 candidate retains the Zed executor and native tool namespace adapter.
+Executor, helper and service package tests pass, as do the Zed race tests and
+a native ARM64 build. Go 1.27 changed the JSON string-error suffix; diagnostics
+now recognize both forms without logging raw tool contents.
+
+Production remains on 8.0.32. The real Zed worker acceptance consumes credits
+and has not run in this maintenance task. Keep activation blocked until the
+required native tool/result and consumer checks pass under authorized spending,
+and preserve prior binary/config/auth state. No Paseo configuration change is
+needed for this gateway candidate.
+
+## October 30 single-attempt acceptance failure
+
+One user-authorized real worker attempt (150-second maximum) ran against an
+isolated candidate gateway and copied local authentication state. It exited
+with code 1 after about 0.4 seconds: HTTP 503, with the underlying Zed response
+reporting an empty JSON request body. No successful generation or usage receipt
+was returned; billing was not independently verified. The attempt was not retried.
+The preview gateway and worker exited, and temporary configuration/auth/fixture
+files were removed. Production remains unchanged.
+
+The maintained refresh adapter sends `http.NoBody` to `/client/llm_tokens`.
+Official Zed source at `14b7b0ef3764d62a85070c8b5ccea105a2ad3235` instead sends
+`CreateLlmTokenBody { organization_id }`; its type requires an OrganizationId.
+The existing private auth record has no organization field. This is a concrete
+contract mismatch consistent with the observed failure, not proof of revoked
+credentials or exhausted credit.
+
+Before another real acceptance attempt, discover and verify the existing
+account's intended organization without changing billing/access, implement the
+JSON exchange contract with focused local tests, and obtain a fresh bounded
+real-attempt authorization. Do not guess an organization or replace credentials.
+
+Sources: [official client](https://github.com/zed-industries/zed/blob/14b7b0ef3764d62a85070c8b5ccea105a2ad3235/crates/cloud_api_client/src/cloud_api_client.rs),
+[request types](https://github.com/zed-industries/zed/blob/14b7b0ef3764d62a85070c8b5ccea105a2ad3235/crates/cloud_api_types/src/cloud_api_types.rs).
+
+## Token contract preparation after the failed attempt
+
+A read-only GET to the official `/client/users/me` endpoint verified the same
+legacy user identity, exactly one personal organization, and that organization
+as the server's default. The private observation is retained locally; production
+authentication and billing selection were not changed.
+
+The candidate now requires a nonempty, verified `organization_id` for token
+exchange and sends the official JSON body. Missing organization metadata fails
+before a network request; token-cache keys include organization identity. Focused
+local tests cover the request body, missing-field failure and cache separation;
+Zed race tests and executor/helper/service packages pass. No second real request
+was made. Deployment remains blocked on separately authorized real acceptance.
