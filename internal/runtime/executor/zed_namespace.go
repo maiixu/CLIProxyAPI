@@ -1,11 +1,14 @@
 package executor
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 )
+
+const zedNamespaceAliasPrefix = "zedns_"
 
 type zedToolName struct{ Namespace, Name string }
 type zedToolNames map[string]zedToolName
@@ -13,7 +16,7 @@ type zedToolNames map[string]zedToolName
 // zedNamespaceAlias derives the stable request-local name for a namespaced tool.
 func zedNamespaceAlias(namespace, name string) string {
 	sum := sha256.Sum256([]byte(namespace + "\x00" + name))
-	return "zedns_" + hex.EncodeToString(sum[:16])
+	return zedNamespaceAliasPrefix + hex.EncodeToString(sum[:16])
 }
 
 // Zed accepts native function/custom tools but not the namespace wrapper.
@@ -29,6 +32,7 @@ func zedFlattenNamespaces(payload []byte) ([]byte, zedToolNames, error) {
 	var tools []map[string]json.RawMessage
 	if json.Unmarshal(request["tools"], &tools) == nil {
 		flat := make([]map[string]json.RawMessage, 0, len(tools))
+		sawNamespace := false
 		for _, tool := range tools {
 			var kind string
 			_ = json.Unmarshal(tool["type"], &kind)
@@ -36,6 +40,7 @@ func zedFlattenNamespaces(payload []byte) ([]byte, zedToolNames, error) {
 				flat = append(flat, tool)
 				continue
 			}
+			sawNamespace = true
 			var namespace string
 			if err := json.Unmarshal(tool["name"], &namespace); err != nil || namespace == "" {
 				return nil, nil, fmt.Errorf("zed: invalid tool namespace")
@@ -60,7 +65,9 @@ func zedFlattenNamespaces(payload []byte) ([]byte, zedToolNames, error) {
 				flat = append(flat, child)
 			}
 		}
-		if len(names) > 0 {
+		// Rewrite whenever a wrapper was seen, even an empty one: Zed rejects
+		// the namespace type itself.
+		if sawNamespace {
 			for _, tool := range flat {
 				var name string
 				_ = json.Unmarshal(tool["name"], &name)
@@ -122,7 +129,23 @@ func zedFlattenNamespaces(payload []byte) ([]byte, zedToolNames, error) {
 	if json.Unmarshal(request["tool_choice"], &choice) == nil && choice != nil {
 		var kind string
 		_ = json.Unmarshal(choice["type"], &kind)
-		if (kind == "function" || kind == "custom") && flatten(choice) {
+		choiceChanged := (kind == "function" || kind == "custom") && flatten(choice)
+		var allowed []map[string]json.RawMessage
+		if kind == "allowed_tools" && json.Unmarshal(choice["tools"], &allowed) == nil {
+			allowedChanged := false
+			for _, entry := range allowed {
+				var entryKind string
+				_ = json.Unmarshal(entry["type"], &entryKind)
+				if (entryKind == "function" || entryKind == "custom") && flatten(entry) {
+					allowedChanged = true
+				}
+			}
+			if allowedChanged {
+				choice["tools"], _ = json.Marshal(allowed)
+				choiceChanged = true
+			}
+		}
+		if choiceChanged {
 			request["tool_choice"], _ = json.Marshal(choice)
 			changed = true
 		}
@@ -134,25 +157,29 @@ func zedFlattenNamespaces(payload []byte) ([]byte, zedToolNames, error) {
 	return out, names, err
 }
 
-// Apply to both streamed item events and terminal response.output arrays.
+// zedRestoreNamespaces maps aliases back to the client's namespaced tools in
+// streamed events and terminal responses: output items, argument/input done
+// events, and the echoed response.tools and response.tool_choice. Aliases are
+// collision-checked hashes, so any object whose name is a known alias is ours.
 func zedRestoreNamespaces(data []byte, names zedToolNames) []byte {
-	if len(names) == 0 || len(data) == 0 {
+	if len(names) == 0 || len(data) == 0 || !bytes.Contains(data, []byte(zedNamespaceAliasPrefix)) {
 		return data
 	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	// Keep numbers verbatim; float64 would corrupt integers above 2^53.
+	decoder.UseNumber()
 	var value any
-	if json.Unmarshal(data, &value) != nil {
+	if decoder.Decode(&value) != nil {
 		return data
 	}
 	var visit func(any)
 	visit = func(v any) {
 		switch x := v.(type) {
 		case map[string]any:
-			if kind, _ := x["type"].(string); kind == "function_call" || kind == "custom_tool_call" {
-				if name, ok := x["name"].(string); ok {
-					if original, found := names[name]; found {
-						x["name"] = original.Name
-						x["namespace"] = original.Namespace
-					}
+			if name, ok := x["name"].(string); ok {
+				if original, found := names[name]; found {
+					x["name"] = original.Name
+					x["namespace"] = original.Namespace
 				}
 			}
 			for _, child := range x {
@@ -165,9 +192,11 @@ func zedRestoreNamespaces(data []byte, names zedToolNames) []byte {
 		}
 	}
 	visit(value)
-	out, err := json.Marshal(value)
-	if err != nil {
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if encoder.Encode(value) != nil {
 		return data
 	}
-	return out
+	return bytes.TrimRight(out.Bytes(), "\n")
 }
