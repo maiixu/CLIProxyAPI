@@ -1344,6 +1344,14 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			auth.Status = StatusError
 			auth.NextRefreshAfter = time.Time{}
 			auth.NextRetryAfter = time.Time{}
+		} else if rejectsToken && authHasRefreshCredential(auth) && result.Error != nil && result.Error.Code == refreshedTokenRejectedErrorCode && auth.NextRetryAfter.After(now) {
+			// The executor already refreshed and upstream refused the fresh token
+			// too. A further refresh would only mint another token and lift the
+			// cooldown early, so defer it until the cooldown ends.
+			if auth.NextRefreshAfter.Before(auth.NextRetryAfter) {
+				auth.NextRefreshAfter = auth.NextRetryAfter
+			}
+			scheduleUnauthorizedRefresh = true
 		} else if rejectsToken && authHasRefreshCredential(auth) {
 			if auth.NextRefreshAfter.IsZero() {
 				if !auth.LastRefreshedAt.IsZero() && now.Sub(auth.LastRefreshedAt) < refreshFailureBackoff {
@@ -1999,6 +2007,9 @@ func resultErrorFromError(err error) *Error {
 		if resultErr.Code == "" || resultErr.Code == transientTransportErrorCode {
 			resultErr.Code = transientTransportErrorCode
 		}
+	}
+	if _, ok := refreshedTokenRejected(err); ok && resultErr.Code == "" {
+		resultErr.Code = refreshedTokenRejectedErrorCode
 	}
 	return resultErr
 }

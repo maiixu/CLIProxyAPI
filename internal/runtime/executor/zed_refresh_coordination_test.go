@@ -153,3 +153,47 @@ func TestZedTransientExchangeUnauthorizedDoesNotSidelineAccount(t *testing.T) {
 		t.Fatalf("follow-up request failed: %v", errExecute)
 	}
 }
+
+func TestZedRefreshExchangesAfterRefreshedTokenRejected(t *testing.T) {
+	var exchanges atomic.Int32
+	var lastIssued atomic.Value
+	executor := zedTestExecutor(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/client/llm_tokens":
+			token := zedTestJWT(zedTestNow.Add(time.Hour), fmt.Sprintf("exchange-%d", exchanges.Add(1)))
+			lastIssued.Store(token)
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": token})
+		case "/completions":
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	})
+	auth := zedTestAuth()
+	request, options := zedTestRequest()
+	_, errExecute := executor.Execute(context.Background(), auth, request, options)
+	rejected, ok := errExecute.(cliproxyauth.RefreshedTokenRejectedError)
+	if !ok {
+		t.Fatalf("error %T does not surface the rejected refreshed token", errExecute)
+	}
+	issued := lastIssued.Load().(string)
+	if rejected.RejectedAccessToken() != issued {
+		t.Fatal("surfaced token is not the refreshed token actually sent")
+	}
+
+	// The manager still holds the original token; its refresh must not get the
+	// token Zed just refused back from the cache.
+	refreshed, errRefresh := executor.Refresh(context.Background(), auth)
+	if errRefresh != nil {
+		t.Fatal(errRefresh)
+	}
+	if executor.token(refreshed) == issued {
+		t.Fatal("Refresh returned the token Zed just rejected")
+	}
+	if got := exchanges.Load(); got != 2 {
+		t.Fatalf("token exchanges = %d, want 2", got)
+	}
+	carrier := auth.Clone()
+	carrier.Metadata["access_token"] = issued
+	if !executor.ShouldPrepareRequestAuth(carrier) {
+		t.Fatal("an auth carrying the rejected token must be prepared again")
+	}
+}

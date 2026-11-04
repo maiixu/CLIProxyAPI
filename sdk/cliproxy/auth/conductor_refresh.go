@@ -445,7 +445,8 @@ func authHasRefreshCredential(auth *Auth) bool {
 		return true
 	}
 	// Zed exchanges its long-lived account credential for a new short-lived
-	// JWT, so a 401 (including a transient token-exchange 401) is recoverable.
+	// JWT, so a completion 401 on an old JWT is recoverable by refreshing. A 401
+	// from the token exchange itself is not: refresh treats it as terminal.
 	if zedHasExchangeCredential(auth) {
 		return true
 	}
@@ -852,6 +853,12 @@ func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, e
 		m.markRejectedAccessToken(auth.ID, failedToken)
 	}
 	if alreadyTried || !authHasRefreshCredential(auth) || hasUnauthorizedAuthFailure(auth) {
+		return auth, false
+	}
+	// The executor already refreshed and its fresh token was rejected as well.
+	if rejectedToken, ok := refreshedTokenRejected(execErr); ok {
+		m.markRejectedAccessToken(auth.ID, rejectedToken)
+		log.Debugf("unauthorized response for %s (%s) after executor refresh; not refreshing again", auth.Provider, auth.ID)
 		return auth, false
 	}
 	log.Debugf("unauthorized response for %s (%s), refreshing credentials before fallback", auth.Provider, auth.ID)

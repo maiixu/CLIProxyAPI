@@ -44,7 +44,8 @@ type ZedExecutor struct {
 	tokensMu sync.RWMutex
 	tokens   map[[32]byte]*cliproxyauth.Auth
 	// stale records a token Zed flagged as expired/outdated on a successful
-	// response; the next request exchanges a new one before using it.
+	// response, or rejected right after it was exchanged; the next request
+	// exchanges a new one before using it.
 	stale map[[32]byte]string
 	// exchanges coalesces concurrent token exchanges per account so one slow
 	// exchange never blocks requests for other accounts.
@@ -143,6 +144,25 @@ func (e *ZedExecutor) markStale(auth *cliproxyauth.Auth) {
 		e.stale = make(map[[32]byte]string)
 	}
 	e.stale[key] = e.token(auth)
+}
+
+// markRejected drops a token Zed rejected even after a refresh, so a later
+// Refresh or request preparation exchanges a new one instead of reusing it.
+func (e *ZedExecutor) markRejected(auth *cliproxyauth.Auth) {
+	_, key, errCredentials := e.credentials(auth)
+	if errCredentials != nil {
+		return
+	}
+	token := e.token(auth)
+	e.tokensMu.Lock()
+	defer e.tokensMu.Unlock()
+	if e.token(e.tokens[key]) == token {
+		delete(e.tokens, key)
+	}
+	if e.stale == nil {
+		e.stale = make(map[[32]byte]string)
+	}
+	e.stale[key] = token
 }
 
 func (e *ZedExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
@@ -437,6 +457,11 @@ func (e *ZedExecutor) open(ctx context.Context, auth *cliproxyauth.Auth, payload
 			// Explicit token rejection remains an auth failure after the one
 			// refresh attempt, even when Zed's transport/body reports 403.
 			upstreamError.Code = http.StatusUnauthorized
+			// This token came from the refresh above. Never hand it out again,
+			// and tell the manager which token failed so it does not refresh
+			// once more and lift the cooldown of a refused account.
+			e.markRejected(current)
+			upstreamError.RefreshedToken = e.token(current)
 		}
 		return nil, upstreamError
 	}

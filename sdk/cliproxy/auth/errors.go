@@ -59,6 +59,30 @@ type Error struct {
 	HTTPStatus int `json:"http_status,omitempty"`
 }
 
+// RefreshedTokenRejectedError is implemented by executor errors whose 401 came
+// from a token the executor had just obtained through its own credential
+// refresh. RejectedAccessToken returns that token. The manager then neither
+// refreshes again nor lets a refresh lift the cooldown early: another exchange
+// cannot fix a credential whose fresh tokens are refused.
+type RefreshedTokenRejectedError interface {
+	error
+	RejectedAccessToken() string
+}
+
+// refreshedTokenRejectedErrorCode marks a Result whose 401 came from a token
+// the executor had just refreshed (see RefreshedTokenRejectedError).
+const refreshedTokenRejectedErrorCode = "refreshed_token_rejected"
+
+// refreshedTokenRejected returns the token surfaced by a RefreshedTokenRejectedError.
+func refreshedTokenRejected(err error) (string, bool) {
+	var rejected RefreshedTokenRejectedError
+	if err == nil || !errors.As(err, &rejected) || rejected == nil {
+		return "", false
+	}
+	token := strings.TrimSpace(rejected.RejectedAccessToken())
+	return token, token != ""
+}
+
 // IsTerminalAuthError checks if err or any error in its chain represents a permanent upstream auth failure.
 func IsTerminalAuthError(err error) bool {
 	if err == nil {
