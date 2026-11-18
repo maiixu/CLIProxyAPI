@@ -204,3 +204,18 @@ checks, the targeted executor regression rerun, Zed race tests and the ARM64
 build pass. A broad executor run had one transient terminal-event test failure;
 its exact rerun passed. No production switch or real credit-consuming acceptance
 has occurred. Existing production remains the accepted 8.0.32-zed binary.
+
+## November 18 acceptance
+
+The v8.0.77 candidate passed the native file/tool worker in 18.81 seconds under
+one explicit 150-second authorization. It read five fixture numbers, wrote
+count=5 and sum=521, and independently verified the result. Real usage was
+returned; both preview processes exited. This does not add another paid attempt.
+
+An earlier local 503 was reproduced by a synthetic expired JWT selection test:
+an expired persisted access token is rejected before execution, while a fresh
+JWT reaches the executor. Updating only the long-lived login credential is not
+sufficient for this startup boundary. The successful acceptance refreshed the
+JWT through the existing verified organization and checked more than 180 seconds
+of remaining lifetime before admitting the bounded worker. No subscription,
+organization, default model or account-routing change was made.
