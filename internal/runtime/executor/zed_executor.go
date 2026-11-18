@@ -5,8 +5,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -21,8 +23,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const (
@@ -250,11 +250,12 @@ func (e *ZedExecutor) payload(req cliproxyexecutor.Request, opts cliproxyexecuto
 		return nil, &helps.ZedError{Code: http.StatusBadRequest, Message: "invalid Responses request"}
 	}
 	// Do not run Codex's OAuth converter: it removes output limits and API fields.
-	providerRequest, errModel := sjson.SetBytes(req.Payload, "model", model)
+	providerDoc := ojson.NewDoc(req.Payload)
+	errModel := providerDoc.Set("model", model)
 	if errModel != nil {
 		return nil, errModel
 	}
-	providerRequest, errStream := sjson.SetBytes(providerRequest, "stream", true)
+	errStream := providerDoc.Set("stream", true)
 	if errStream != nil {
 		return nil, errStream
 	}
@@ -265,7 +266,7 @@ func (e *ZedExecutor) payload(req cliproxyexecutor.Request, opts cliproxyexecuto
 			if item.Get("type").String() == "message" && item.Get("role").String() == "developer" {
 				// Zed uses the legacy system role for developer messages.
 				var errRole error
-				providerRequest, errRole = sjson.SetBytes(providerRequest, fmt.Sprintf("input.%d.role", index), "system")
+				errRole = providerDoc.Set(fmt.Sprintf("input.%d.role", index), "system")
 				if errRole != nil {
 					return nil, errRole
 				}
@@ -273,7 +274,7 @@ func (e *ZedExecutor) payload(req cliproxyexecutor.Request, opts cliproxyexecuto
 			if content := item.Get("content"); item.Get("type").String() == "reasoning" && content.Exists() && content.Type == gjson.Null {
 				// Zed's reasoning content is a sequence; preserve the opaque state.
 				var errContent error
-				providerRequest, errContent = sjson.SetRawBytes(providerRequest, fmt.Sprintf("input.%d.content", index), []byte("[]"))
+				errContent = providerDoc.SetRawBytes(fmt.Sprintf("input.%d.content", index), []byte("[]"))
 				if errContent != nil {
 					return nil, errContent
 				}
@@ -298,7 +299,7 @@ func (e *ZedExecutor) payload(req cliproxyexecutor.Request, opts cliproxyexecuto
 		Provider string          `json:"provider"`
 		Model    string          `json:"model"`
 		Request  json.RawMessage `json:"provider_request"`
-	}{threadID, uuid.NewString(), "open_ai", model, providerRequest}
+	}{threadID, uuid.NewString(), "open_ai", model, providerDoc.Bytes()}
 	return json.Marshal(envelope)
 }
 

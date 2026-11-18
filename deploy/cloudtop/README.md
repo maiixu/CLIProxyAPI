@@ -195,3 +195,12 @@ before a network request; token-cache keys include organization identity. Focuse
 local tests cover the request body, missing-field failure and cache separation;
 Zed race tests and executor/helper/service packages pass. No second real request
 was made. Deployment remains blocked on separately authorized real acceptance.
+
+## November 18 candidate
+
+The 8.0.77 candidate carries the existing Zed organization-token contract and
+uses the upstream JSON document API for request normalization. Helper/service
+checks, the targeted executor regression rerun, Zed race tests and the ARM64
+build pass. A broad executor run had one transient terminal-event test failure;
+its exact rerun passed. No production switch or real credit-consuming acceptance
+has occurred. Existing production remains the accepted 8.0.32-zed binary.
